@@ -17,5 +17,5 @@ pub mod gunluk;
 pub mod kisi;
 
 pub use dal::DalKimligi;
-pub use gunluk::{Gunluk, Islem, Olay};
+pub use gunluk::{Gunluk, Islem, Okuma, Olay};
 pub use kisi::{Kisi, KisiRolu, TarafTuru, YazarKatkisi};

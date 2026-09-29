@@ -17,7 +17,8 @@ küçük, MIT lisanslı bir crate.
 Taşır:
 - `dal::DalKimligi` — bir değişikliği üreten YZ oturumuna bağlar (`AGIT_SESSION`
   varsa o, yoksa süreç kimliği).
-- `gunluk::Gunluk` — yalnız-ekleme JSON Lines değişiklik günlüğü.
+- `gunluk::Gunluk` — yalnız-ekleme JSON Lines değişiklik günlüğü. Dal başına tek dosya (`Gunluk::dal_icin`), her kayıt `sync_data` ile kalıcı; "önce günlük, sonra durum" kuralının günlük yarısı. `
+` ile kapanmamış yarım son satır kayıt sayılmaz (`Okuma::yarim_son_satir`), bir sonraki `ekle` onu budar.
 - `kisi::Kisi` — ilk paylaşılan veri sınıfı. "Kişi = yazar mı, taraf mı?"
   sorusunun cevabı: ikisi de rol olarak eklenir, kimlik ortak kalır.
 

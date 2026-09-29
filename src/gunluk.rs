@@ -9,7 +9,7 @@
 use crate::dal::DalKimligi;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +56,15 @@ impl Olay {
     }
 }
 
+/// [`Gunluk::oku`] sonucu.
+#[derive(Debug)]
+pub struct Okuma {
+    pub olaylar: Vec<Olay>,
+    /// Dosya `\n` ile kapanmamış bir son satırla bitiyor (çökmeden kalan yarım
+    /// yazma). O satır `olaylar`a girmez; bir sonraki `ekle` onu budar.
+    pub yarim_son_satir: bool,
+}
+
 /// Dosyaya yalnız-ekleme JSON Lines günlüğü: her satır bir [`Olay`].
 pub struct Gunluk {
     yol: std::path::PathBuf,
@@ -68,32 +77,75 @@ impl Gunluk {
         }
     }
 
-    /// Tek bir olayı dosyanın sonuna ekler. Var olan satırlara dokunmaz.
+    /// Bir dalın günlüğü: `dizin` altında o dala ait tek dosya (dal başına tek yazar).
+    pub fn dal_icin(dizin: impl AsRef<Path>, dal: &DalKimligi) -> Self {
+        Self::ac(dizin.as_ref().join(dal.gunluk_dosya_adi()))
+    }
+
+    /// Tek bir olayı dosyanın sonuna ekler ve diske işlenmesini bekler
+    /// (`sync_data`): "önce günlük, sonra durum" kuralı ancak dönüşte kayıt
+    /// kalıcıysa işler. Önceki bir çökmeden kalan, `\n` ile kapanmamış yarım son
+    /// satır önce budanır — o satır hiç tamamlanmadığı için onaylanmış bir kayıt
+    /// değildi.
     pub fn ekle(&self, olay: &Olay) -> io::Result<()> {
+        self.yarim_kuyrugu_buda()?;
+        let mut satir = serde_json::to_string(olay)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        satir.push('\n');
         let mut dosya = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.yol)?;
-        let satir = serde_json::to_string(olay)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        writeln!(dosya, "{satir}")
+        dosya.write_all(satir.as_bytes())?;
+        dosya.sync_data()
     }
 
-    /// Günlüğü baştan sona okur. Bozuk bir satır varsa hata döner — sessizce atlamaz.
-    pub fn oku(&self) -> io::Result<Vec<Olay>> {
-        if !self.yol.exists() {
-            return Ok(Vec::new());
+    // ponytail: tüm dosyayı okur; günlük dal başına küçük. Büyürse sondan parça parça tara.
+    fn yarim_kuyrugu_buda(&self) -> io::Result<()> {
+        let bayt = match std::fs::read(&self.yol) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if bayt.last().map_or(true, |&b| b == b'\n') {
+            return Ok(());
         }
-        let dosya = std::fs::File::open(&self.yol)?;
-        BufReader::new(dosya)
-            .lines()
-            .filter(|s| s.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(true))
-            .map(|satir| {
-                let satir = satir?;
-                serde_json::from_str(&satir)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-            })
-            .collect()
+        let tam = bayt.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        OpenOptions::new()
+            .write(true)
+            .open(&self.yol)?
+            .set_len(tam as u64)
+    }
+
+    /// Günlüğü baştan sona okur. Yalnız `\n` ile kapanmış satırlar kayıttır.
+    /// Son satır kapanmamışsa sayılmaz ve [`Okuma::yarim_son_satir`] ile bildirilir;
+    /// ortadaki bozuk bir satır ise hatadır — sessizce atlanmaz.
+    pub fn oku(&self) -> io::Result<Okuma> {
+        let bayt = match std::fs::read(&self.yol) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let yarim = bayt.last().map_or(false, |&b| b != b'\n');
+        let tam_uzunluk = if yarim {
+            bayt.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1)
+        } else {
+            bayt.len()
+        };
+        let mut olaylar = Vec::new();
+        for satir in bayt[..tam_uzunluk].split(|&b| b == b'\n') {
+            if satir.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            olaylar.push(
+                serde_json::from_slice(satir)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            );
+        }
+        Ok(Okuma {
+            olaylar,
+            yarim_son_satir: yarim,
+        })
     }
 }
 
@@ -126,7 +178,9 @@ mod tests {
             ))
             .unwrap();
 
-        let olaylar = gunluk.oku().unwrap();
+        let okuma = gunluk.oku().unwrap();
+        assert!(!okuma.yarim_son_satir);
+        let olaylar = okuma.olaylar;
         assert_eq!(olaylar.len(), 2);
         assert_eq!(olaylar[0].islem, Islem::Ekle);
         assert_eq!(olaylar[1].islem, Islem::Guncelle);
@@ -137,7 +191,79 @@ mod tests {
     fn hic_yazilmamis_dosya_bos_liste_doner() {
         let dizin = tempfile::tempdir().unwrap();
         let gunluk = Gunluk::ac(dizin.path().join("yok.jsonl"));
-        assert_eq!(gunluk.oku().unwrap().len(), 0);
+        let okuma = gunluk.oku().unwrap();
+        assert_eq!(okuma.olaylar.len(), 0);
+        assert!(!okuma.yarim_son_satir);
+    }
+
+    fn ornek(kayit_id: &str) -> Olay {
+        Olay::yeni(
+            DalKimligi::ham("d"),
+            "kisi",
+            kayit_id,
+            Islem::Ekle,
+            serde_json::json!({}),
+        )
+    }
+
+    #[test]
+    fn yarim_son_satir_bildirilir_ve_kayit_sayilmaz() {
+        let dizin = tempfile::tempdir().unwrap();
+        let yol = dizin.path().join("yarim.jsonl");
+        let gunluk = Gunluk::ac(&yol);
+        gunluk.ekle(&ornek("K1")).unwrap();
+        // çökme taklidi: ikinci kayıt yarıda kesildi, "\n" hiç yazılmadı
+        let mut bayt = std::fs::read(&yol).unwrap();
+        bayt.extend_from_slice(br#"{"dal":"d","veri_sinifi":"ki"#);
+        std::fs::write(&yol, bayt).unwrap();
+
+        let okuma = gunluk.oku().unwrap();
+        assert!(okuma.yarim_son_satir);
+        assert_eq!(okuma.olaylar.len(), 1);
+        assert_eq!(okuma.olaylar[0].kayit_id, "K1");
+    }
+
+    #[test]
+    fn tamam_ama_yeni_satirsiz_son_kayit_da_onaysiz_sayilir() {
+        // ekle her kaydı "\n" ile birlikte tek yazışta yazar; "\n"siz kalan
+        // satır, JSON'u geçerli olsa bile, tamamlanmamış yazmadır.
+        let dizin = tempfile::tempdir().unwrap();
+        let yol = dizin.path().join("k.jsonl");
+        let tam = serde_json::to_string(&ornek("K1")).unwrap();
+        std::fs::write(&yol, tam).unwrap();
+        let okuma = Gunluk::ac(&yol).oku().unwrap();
+        assert!(okuma.yarim_son_satir);
+        assert_eq!(okuma.olaylar.len(), 0);
+    }
+
+    #[test]
+    fn ekle_yarim_kuyrugu_budar_ve_oncekilere_dokunmaz() {
+        let dizin = tempfile::tempdir().unwrap();
+        let yol = dizin.path().join("buda.jsonl");
+        let gunluk = Gunluk::ac(&yol);
+        gunluk.ekle(&ornek("K1")).unwrap();
+        let mut bayt = std::fs::read(&yol).unwrap();
+        bayt.extend_from_slice(b"{yarim");
+        std::fs::write(&yol, bayt).unwrap();
+
+        gunluk.ekle(&ornek("K2")).unwrap();
+
+        let okuma = gunluk.oku().unwrap();
+        assert!(!okuma.yarim_son_satir);
+        let idler: Vec<_> = okuma.olaylar.iter().map(|o| o.kayit_id.as_str()).collect();
+        assert_eq!(idler, ["K1", "K2"]);
+    }
+
+    #[test]
+    fn dal_icin_her_dala_ayri_dosya_verir() {
+        let dizin = tempfile::tempdir().unwrap();
+        let a = Gunluk::dal_icin(dizin.path(), &DalKimligi::ham("x/y@z"));
+        let b = Gunluk::dal_icin(dizin.path(), &DalKimligi::ham("x/y@w"));
+        a.ekle(&ornek("A")).unwrap();
+        b.ekle(&ornek("B")).unwrap();
+        assert_eq!(a.oku().unwrap().olaylar[0].kayit_id, "A");
+        assert_eq!(b.oku().unwrap().olaylar[0].kayit_id, "B");
+        assert_eq!(std::fs::read_dir(dizin.path()).unwrap().count(), 2);
     }
 
     #[test]

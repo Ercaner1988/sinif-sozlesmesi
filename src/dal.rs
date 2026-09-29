@@ -37,6 +37,22 @@ impl DalKimligi {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Bu dalın günlük dosyasının adı. Kodlama birebirdir (iki farklı dal asla
+    /// aynı dosyaya düşmez): `[A-Za-z0-9_-]` dışındaki her bayt `%XX` olur.
+    /// `dal-` öneki Windows'un aygıt adlarını (`CON`, `NUL`…) dışarıda tutar.
+    pub fn gunluk_dosya_adi(&self) -> String {
+        let mut ad = String::from("dal-");
+        for b in self.0.bytes() {
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+                ad.push(b as char);
+            } else {
+                ad.push_str(&format!("%{b:02X}"));
+            }
+        }
+        ad.push_str(".jsonl");
+        ad
+    }
 }
 
 impl std::fmt::Display for DalKimligi {
@@ -72,6 +88,27 @@ mod tests {
         let k = DalKimligi::yerel();
         assert!(k.as_str().contains('-'));
         assert!(k.as_str().starts_with(&std::process::id().to_string()));
+    }
+
+    #[test]
+    fn dosya_adi_ayirici_karakterleri_kodlar_ve_birebirdir() {
+        let a = DalKimligi::ham("buzbey/entegrasyon-plani@grill-entegrasyon-swot");
+        let ad = a.gunluk_dosya_adi();
+        assert_eq!(
+            ad,
+            "dal-buzbey%2Fentegrasyon-plani%40grill-entegrasyon-swot.jsonl"
+        );
+        assert!(!ad.contains('/') && !ad.contains('@'));
+        // '/' ve '@' aynı karaktere çökmemeli
+        assert_ne!(
+            DalKimligi::ham("a/b").gunluk_dosya_adi(),
+            DalKimligi::ham("a@b").gunluk_dosya_adi()
+        );
+        // '%' kendisi de kodlanır: "a%2Fb" ile "a/b" karışmaz
+        assert_ne!(
+            DalKimligi::ham("a%2Fb").gunluk_dosya_adi(),
+            DalKimligi::ham("a/b").gunluk_dosya_adi()
+        );
     }
 
     #[test]
