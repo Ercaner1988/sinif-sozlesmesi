@@ -59,9 +59,10 @@ pub enum KisiRolu {
     },
 }
 
-/// Paylaşılan kişi kimliği. `id` araçlar arasında kararlı bir anahtardır
-/// (ör. Zotero creatorID + dosya tarafı kimlik eşlemesi el-Fihrist'te tutulur — bu
-/// crate eşlemenin kendisini taşımaz, yalnız biçimini tanımlar).
+/// Kişi kaydı. `id`, kaydı üreten aracın kendi kimliğidir (ör. Zotero
+/// creatorID); iki aracın aynı gerçek kişiyi aynı `id` ile anacağı varsayılmaz.
+/// Araçlar arası eşleme burada değil, el-Fihrist'te isteğe bağlı ayrı bir
+/// tabloda tutulur — aynı ad, farklı kişi olabileceği için otomatik birleştirme yok.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kisi {
     pub id: String,
